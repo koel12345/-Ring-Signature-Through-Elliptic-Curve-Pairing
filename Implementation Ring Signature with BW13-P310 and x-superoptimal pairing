@@ -1,0 +1,646 @@
+from sage.all import *
+import time
+import sys
+import platform
+import hashlib
+import random
+from cypari2 import Pari
+
+# PARI Initialization
+pari = Pari()
+pari.allocatemem(100000000)
+
+# Environment Check
+print("Starting the full demonstration...", flush=True)
+print(f"SageMath Version: {sage.version.version}", flush=True)
+print(f"Python Version: {platform.python_version()}", flush=True)
+print(f"System: {platform.system()} {platform.release()}", flush=True)
+start_demo = time.time()
+
+# Parameters
+x = -2224
+p = ZZ(1749234309176102157657582860550885176950582224007184238236721873530271444092780387026731606667)
+r = ZZ(214308536073499611791347244564448891485414130299542820997821295614787605549950801)
+t = ZZ(-72424742659885778123097924206425573989051009199)
+k = 13
+
+print(f"Parameters used: x = {x}, p = {p}, r = {r}, t = {t}, k = {k}", flush=True)
+print(f"Checkpoint 1: Verifying parameters...", flush=True)
+print(f"p is prime: {is_prime(p)}", flush=True)
+print(f"r is prime: {is_prime(r)}", flush=True)
+print(f"p^k ≡ 1 mod r: {pow(p, k, r) == 1}", flush=True)
+
+# Finite Field Construction
+print("Checkpoint 2: Constructing Fp...", flush=True)
+try:
+    Fp = GF(p, proof=False)
+except Exception as e:
+    print(f"Error during Fp construction: {e}", flush=True)
+    raise
+print("Checkpoint 3: Constructing Fp13...", flush=True)
+try:
+    R.<z> = PolynomialRing(Fp)
+    poly = z^13 - 2
+    Fp13 = Fp.extension(poly, 'c')
+    c = Fp13.gen()
+except Exception as e:
+    print(f"Error during Fp13 construction: {e}", flush=True)
+    raise
+
+print(f"Base field Fp constructed with p = {p}", flush=True)
+print(f"Fp13 extension constructed", flush=True)
+
+# Curve Definition
+print("Checkpoint 4: Defining the curve E...", flush=True)
+try:
+    a = Fp(0)
+    b = Fp(-17)
+    E = EllipticCurve(Fp, [a, b])
+    order = E.order()
+    print(f"Order of the curve E: {order}", flush=True)
+except Exception as e:
+    print(f"Error during E definition: {e}", flush=True)
+    raise
+
+# Finding P
+print("Checkpoint 5: Searching for P...", flush=True)
+try:
+    cofactor_E = order // r
+    for _ in range(100):
+        P_temp = E.random_point()
+        if P_temp.is_zero():
+            continue
+        P_cand = cofactor_E * P_temp
+        if not P_cand.is_zero():
+            try:
+                if P_cand.order() == r:
+                    P = P_cand
+                    break
+            except:
+                continue
+    else:
+        raise ValueError("Unable to find P")
+    print(f"Point P: {P}", flush=True)
+    print(f"Order of P: {P.order()}", flush=True)
+except Exception as e:
+    print(f"Error during P search: {e}", flush=True)
+    raise
+
+# Extended Curve
+print("Checkpoint 6: Constructing E_ext...", flush=True)
+try:
+    E_ext = EllipticCurve(Fp13, [a, b])
+    order_ext = E_ext.order()
+    print(f"Order of the curve E_ext: {order_ext}", flush=True)
+except Exception as e:
+    print(f"Error during E_ext construction: {e}", flush=True)
+    raise
+
+def est_dans_Fp(Q):
+    try:
+        x, y = Q.xy()
+        return x in Fp and y in Fp
+    except:
+        return False
+
+def construct_Q_with_frobenius(E, E_ext, P, r):
+    print("Constructing Q with Frobenius endomorphism...", flush=True)
+    try:
+        uq = ZZ(E_ext.order() // (r^2))
+        print(f"  Cofactor uq: {uq}", flush=True)
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            start_time = time.time()
+            print(f"Frobenius Attempt {attempt+1}/{max_attempts} (time: {time.ctime()})...", flush=True)
+            try:
+                step_time = time.time()
+                print("  Generating QR...", flush=True)
+                try:
+                    x_coord = Fp13(attempt + 1) + c
+                    y_squared = x_coord^3 - 17
+                    if y_squared.is_square():
+                        y_coord = y_squared.sqrt()
+                        QR = E_ext(x_coord, y_coord)
+                    else:
+                        QR = E_ext.random_point()
+                except:
+                    QR = E_ext.random_point()
+                if time.time() - step_time > 10:
+                    print("  QR generation too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for QR generation: {time.time() - step_time:.2f} seconds", flush=True)
+                if QR.is_zero():
+                    print("  QR is zero, moving to next", flush=True)
+                    continue
+                
+                step_time = time.time()
+                print("  Computing QT = uq * QR...", flush=True)
+                QT = uq * QR
+                if time.time() - step_time > 20:
+                    print("  Scalar multiplication too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for QT computation: {time.time() - step_time:.2f} seconds", flush=True)
+                if QT.is_zero():
+                    print("  QT is zero, moving to next", flush=True)
+                    continue
+                
+                step_time = time.time()
+                print("  Computing Frobenius...", flush=True)
+                x1, y1 = QT.xy()
+                xu = x1^p
+                yu = y1^p
+                X = E_ext([xu, yu])
+                Y = E_ext([x1, y1])
+                Q = X - Y
+                if time.time() - step_time > 10:
+                    print("  Frobenius computation too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for Frobenius: {time.time() - step_time:.2f} seconds", flush=True)
+                if Q.is_zero():
+                    print("  Q is zero, moving to next", flush=True)
+                    continue
+                
+                step_time = time.time()
+                print("  Approximating Q's order...", flush=True)
+                Q_test = r * Q
+                if time.time() - step_time > 10:
+                    print("  Multiplication by r too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for order approximation: {time.time() - step_time:.2f} seconds", flush=True)
+                if not Q_test.is_zero():
+                    print("  Q does not have order r (multiplication test), moving to next", flush=True)
+                    continue
+                
+                step_time = time.time()
+                if est_dans_Fp(Q):
+                    print("  Q is in Fp, moving to next", flush=True)
+                    continue
+                print(f"  Time for Fp check: {time.time() - step_time:.2f} seconds", flush=True)
+                
+                step_time = time.time()
+                print("  Verifying Frobenius(Q) = p*Q...", flush=True)
+                frobenius_Q = E_ext([Q[0]^p, Q[1]^p])
+                p_Q = p * Q
+                if time.time() - step_time > 10:
+                    print("  Frobenius verification too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for Frobenius verification: {time.time() - step_time:.2f} seconds", flush=True)
+                if frobenius_Q == p_Q:
+                    print(f" Point Q constructed with Frobenius (attempt {attempt+1})", flush=True)
+                    print(f"  Verification Frobenius(Q) = p*Q: {frobenius_Q == p_Q}", flush=True)
+                    print(f"  Order of Q: validated by r*Q=0", flush=True)
+                    step_time = time.time()
+                    print("  Explicit verification of Q...", flush=True)
+                    x, y = Q.xy()
+                    assert y^2 == x^3 - 17, "Q is not on the curve"
+                    print("  Q is on the curve E", flush=True)
+                    assert frobenius_Q == p_Q, "Q does not satisfy Frobenius"
+                    print("  Frobenius verified explicitly", flush=True)
+                    print(f"  Time for explicit verification: {time.time() - step_time:.2f} seconds", flush=True)
+                    return Q
+                else:
+                    print("  Q does not satisfy Frobenius, moving to next", flush=True)
+            except Exception as e:
+                print(f"  Error in attempt {attempt+1}: {e}", flush=True)
+                continue
+            if time.time() - start_time > 30:
+                print(f"  Global timeout for attempt {attempt+1}, moving to next", flush=True)
+                continue
+        print(" Frobenius construction failed, using fallback method", flush=True)
+        return construct_Q_simplified_fallback(E, E_ext, P, r)
+    except Exception as e:
+        print(f"Error in construct_Q_with_frobenius: {e}", flush=True)
+        return construct_Q_simplified_fallback(E, E_ext, P, r)
+
+def construct_Q_simplified_fallback(E, E_ext, P, r):
+    print("Constructing point Q with fallback approach...", flush=True)
+    try:
+        print("Attempt: Deterministic construction...", flush=True)
+        c = Fp13.gen()
+        for i in range(1, 10):
+            start_time = time.time()
+            print(f"  Deterministic attempt {i}/10...", flush=True)
+            try:
+                step_time = time.time()
+                x_coord = Fp13(i) + i * c
+                print("  Computing y_squared...", flush=True)
+                y_squared = x_coord^3 - 17
+                if not y_squared.is_square():
+                    if time.time() - step_time > 5:
+                        print("  is_square() too slow, moving to next", flush=True)
+                    else:
+                        print("  y_squared is not a square, moving to next", flush=True)
+                    continue
+                print(f"  Time for y_squared computation: {time.time() - step_time:.2f} seconds", flush=True)
+                step_time = time.time()
+                print("  Computing y_coord...", flush=True)
+                y_coord = y_squared.sqrt()
+                Q_candidate = E_ext(x_coord, y_coord)
+                print(f"  Time for y_coord computation: {time.time() - step_time:.2f} seconds", flush=True)
+                step_time = time.time()
+                if est_dans_Fp(Q_candidate):
+                    print("  Q_candidate is in Fp, moving to next", flush=True)
+                    continue
+                print(f"  Time for Fp verification: {time.time() - step_time:.2f} seconds", flush=True)
+                step_time = time.time()
+                print("  Approximating Q_candidate's order...", flush=True)
+                cofactor = E_ext.order() // r
+                Q = cofactor * Q_candidate
+                if time.time() - step_time > 10:
+                    print("  Cofactor multiplication too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for order approximation: {time.time() - step_time:.2f} seconds", flush=True)
+                if Q.is_zero():
+                    print("  Q is zero, moving to next", flush=True)
+                    continue
+                if est_dans_Fp(Q):
+                    print("  Q is in Fp, moving to next", flush=True)
+                    continue
+                step_time = time.time()
+                print("  Explicit verification of Q...", flush=True)
+                x, y = Q.xy()
+                assert y^2 == x^3 - 17, "Q is not on the curve"
+                print("  Q is on the curve E", flush=True)
+                frobenius_Q = E_ext([x^p, y^p])
+                p_Q = p * Q
+                if frobenius_Q == p_Q:
+                    print(f" Point Q constructed (deterministic, i={i}, approximate order)", flush=True)
+                    print(f"  Frobenius verified explicitly", flush=True)
+                    print(f"  Time for explicit verification: {time.time() - step_time:.2f} seconds", flush=True)
+                    return Q
+                else:
+                    print("  Q does not satisfy Frobenius, moving to next", flush=True)
+            except Exception as e:
+                print(f"  Error in deterministic attempt {i}: {e}", flush=True)
+                continue
+            if time.time() - start_time > 15:
+                print(f"  Timeout for deterministic attempt {i}, moving to next", flush=True)
+                continue
+    except Exception as e:
+        print(f"Deterministic method failed: {e}", flush=True)
+    try:
+        print("Attempt: Random generation...", flush=True)
+        for attempt in range(3):
+            start_time = time.time()
+            print(f"  Random attempt {attempt+1}/3...", flush=True)
+            try:
+                step_time = time.time()
+                Q_random = E_ext.random_point()
+                print(f"  Time for Q_random generation: {time.time() - step_time:.2f} seconds", flush=True)
+                if Q_random.is_zero():
+                    print("  Q_random is zero, moving to next", flush=True)
+                    continue
+                step_time = time.time()
+                if est_dans_Fp(Q_random):
+                    print("  Q_random is in Fp, moving to next", flush=True)
+                    continue
+                print(f"  Time for Fp verification: {time.time() - step_time:.2f} seconds", flush=True)
+                step_time = time.time()
+                print("  Approximating Q_random's order...", flush=True)
+                cofactor = E_ext.order() // r
+                Q = cofactor * Q_random
+                if time.time() - step_time > 10:
+                    print("  Cofactor multiplication too slow, moving to next", flush=True)
+                    continue
+                print(f"  Time for order approximation: {time.time() - step_time:.2f} seconds", flush=True)
+                if Q.is_zero():
+                    print("  Q is zero, moving to next", flush=True)
+                    continue
+                if est_dans_Fp(Q):
+                    print("  Q is in Fp, moving to next", flush=True)
+                    continue
+                step_time = time.time()
+                print("  Explicit verification of Q...", flush=True)
+                x, y = Q.xy()
+                assert y^2 == x^3 - 17, "Q is not on the curve"
+                print("  Q is on the curve E", flush=True)
+                frobenius_Q = E_ext([x^p, y^p])
+                p_Q = p * Q
+                if frobenius_Q == p_Q:
+                    print(f" Point Q constructed (random, attempt {attempt+1}, approximate order)", flush=True)
+                    print(f"  Frobenius verified explicitly", flush=True)
+                    print(f"  Time for explicit verification: {time.time() - step_time:.2f} seconds", flush=True)
+                    return Q
+                else:
+                    print("  Q does not satisfy Frobenius, moving to next", flush=True)
+            except Exception as e:
+                print(f"  Error in random attempt {attempt+1}: {e}", flush=True)
+                continue
+            if time.time() - start_time > 15:
+                print(f"  Timeout for random attempt {attempt+1}, moving to next", flush=True)
+                continue
+    except Exception as e:
+        print(f"Random method failed: {e}", flush=True)
+    raise ValueError("Unable to construct point Q after all attempts")
+
+def find_primitive_cube_root(p, Fp):
+    R.<x> = PolynomialRing(Fp)
+    poly = x^2 + x + 1
+    roots = poly.roots(multiplicities=False)
+    for root in roots:
+        if root != 1 and root^3 == 1:
+            return root
+    raise ValueError("No primitive cube root found")
+
+def apply_phi(P, xi):
+    if P.is_zero():
+        return P
+    x_P, y_P = P.xy()
+    return P.curve()([xi * x_P, y_P])
+
+def apply_phi2(P, xi):
+    if P.is_zero():
+        return P
+    x_P, y_P = P.xy()
+    return P.curve()([xi^2 * x_P, y_P])
+
+def Adding(S1, S2, S3, S4, Q, P, phi_P, phi2_P):
+    t1 = Q[0] * S4 - S1
+    t2 = Q[1] * S3 * S4 - S2
+    t3 = t1^2
+    t4 = t1 * t3
+    t5 = S1 * t3
+    X = t2^2 - (t4 + 2 * t5)
+    Y = t2 * (t5 - X) - S2 * t4
+    Z = S3 * t1
+    d = Z
+    t6 = d * (P[1] - Q[1])
+    n = t6 - t2 * (P[0] - Q[0])
+    n1 = t6 - t2 * (phi_P[0] - Q[0])
+    n2 = t6 - t2 * (phi2_P[0] - Q[0])
+    return [X, Y, Z, Z^2, n, n1, n2]
+
+def Doubling(S1, S2, S3, S4, P, phi_P, phi2_P, a):
+    t1 = S2^2
+    t2 = 4 * S1 * t1
+    t3 = 3 * S1^2 + a * S4^2
+    X = t3^2 - 2 * t2
+    Y = t3 * (t2 - X) - 8 * t1^2
+    Z = S3 * 2 * S2
+    ld = Z * S4
+    t4 = ld * P[1] - 2 * t1
+    ln = t4 - t3 * (S4 * P[0] - S1)
+    ln1 = t4 - t3 * (S4 * phi_P[0] - S1)
+    ln2 = t4 - t3 * (S4 * phi2_P[0] - S1)
+    return [X, Y, Z, Z^2, ln, ln1, ln2]
+
+def ver(S1, S2, S3, S4, P, phi_P, phi2_P):
+    u_d = S4
+    u_n = S4 * P[0] - S1
+    u_n1 = S4 * phi_P[0] - S1
+    u_n2 = S4 * phi2_P[0] - S1
+    return [u_n, u_n1, u_n2]
+
+def miller_loop(Q, P, phi_P, phi2_P, x, a=0):
+    n_f, d_f = 1, 1
+    n_g, d_g = 1, 1
+    S1, S2, S3, S4 = Q[0], Q[1], 1, 1
+    bin_repr = ZZ(abs(x)).binary()
+    bin_list = [int(b) for b in bin_repr[::-1]]
+    for i in range(len(bin_list) - 2, -1, -1):
+        D = Doubling(S1, S2, S3, S4, P, phi_P, phi2_P, a)
+        S1, S2, S3, S4, ln, ln1, ln2 = D[0], D[1], D[2], D[3], D[4], D[5], D[6]
+        V = ver(S1, S2, S3, S4, P, phi_P, phi2_P)
+        un, un1, un2 = V[0], V[1], V[2]
+        n_f = n_f^2 * ln / un
+        d_f = d_f^2 * ln2 / un2
+        n_g = n_g^2 * ln1 / un1
+        d_g = d_g^2 * ln2 / un2
+        if bin_list[i] == 1:
+            A = Adding(S1, S2, S3, S4, Q, P, phi_P, phi2_P)
+            S1, S2, S3, S4, ln, ln1, ln2 = A[0], A[1], A[2], A[3], A[4], A[5], A[6]
+            V = ver(S1, S2, S3, S4, P, phi_P, phi2_P)
+            un, un1, un2 = V[0], V[1], V[2]
+            n_f = n_f * ln / un
+            d_f = d_f * ln2 / un2
+            n_g = n_g * ln1 / un1
+            d_g = d_g * ln2 / un2
+    return [n_f, d_f, n_g, d_g]
+
+def x_a_sup(Q, P, x, p, r, Fp, Fp13):
+    xi = find_primitive_cube_root(p, Fp)
+    phi_P = apply_phi(P, xi)
+    phi2_P = apply_phi2(P, xi)
+    F = miller_loop(Q, P, phi_P, phi2_P, x, a=0)
+    exp = ZZ((p^13 - 1) // r)
+    f = F[0] / F[1]
+    g = F[2] / F[3]
+    G = (f^(-x) * g^p)^exp
+    return G
+
+def hash_to_curve(event, private_key, E, P, r, cofactor):
+    concat_data = str(event) + "|" + str(private_key)
+    m_bytes = concat_data.encode('utf-8')
+    max_attempts = 10000  # Increase attempts
+    for i in range(max_attempts):
+        # Generate a unique hash per attempt
+        hash_input = m_bytes + str(i).encode('utf-8')
+        hash_digest = hashlib.sha256(hash_input).digest()
+        hash_int = int.from_bytes(hash_digest, 'big') % int(p)  # Modulo p to stay in Fp
+        try:
+            x_coord = Fp(hash_int)
+            y_squared = x_coord^3 - 17
+            if not y_squared.is_square():
+                continue
+            y_coord = y_squared.sqrt()
+            point = E(x_coord, y_coord)
+            if point.is_zero():
+                continue
+            result = cofactor * point
+            if result.is_zero():
+                continue
+            # Verify that result has order r
+            if r * result != E(0):
+                continue
+            assert result in E, f"Result not on curve for i={i}"
+            return result
+        except Exception as e:
+            print(f"Error in hash_to_curve for i={i}: {e}", flush=True)
+            continue
+    raise ValueError("Unable to generate a valid point after {} attempts".format(max_attempts))
+
+def hash_hi(Ui, message, pk_list, r, T=None):
+    if T:
+        concat_data = str(Ui) + "|" + message + "|" + str(pk_list) + "|" + str(T)
+    else:
+        concat_data = str(Ui) + "|" + message + "|" + str(pk_list)
+    m_bytes = concat_data.encode('utf-8')
+    hash_digest = hashlib.sha256(m_bytes).digest()
+    hi = int.from_bytes(hash_digest, 'big') % int(r)
+    return max(hi, 1)
+
+def key_gen(P, r):
+    x = randint(1, int(r) - 1)
+    PK = x * P
+    return {"public_key": PK, "private_key": x}
+
+def ring_sign(message, signer_index, P, Q, public_keys, private_key, E, r, event, x, p, Fp, Fp13, cofactor):
+    n = len(public_keys)
+    r = int(r)
+    U = [None] * n
+    h_values = [None] * n
+    T = hash_to_curve(event, private_key, E, P, r, cofactor)
+    non_signer_indices = [i for i in range(n) if i != signer_index]
+    choices = []
+    max_attempts = max(100, 2 * n)
+    for _ in range(max_attempts):
+        pt = E.random_point()
+        if not pt.is_zero():
+            try:
+                x, y = pt.xy()
+                assert y^2 == x^3 - 17, "Point not on curve"
+                choices.append(pt)
+            except:
+                continue
+        if len(choices) >= len(non_signer_indices):
+            break
+    if len(choices) < len(non_signer_indices):
+        raise ValueError(f"Not enough valid points in E: {len(choices)} found, {len(non_signer_indices)} required")
+    selected_points = random.sample(choices, len(non_signer_indices))
+    for idx, non_signer_idx in enumerate(non_signer_indices):
+        U[non_signer_idx] = selected_points[idx]
+    for i in non_signer_indices:
+        h_values[i] = hash_hi(U[i], message, public_keys, r, T)
+    a = randint(1, r-1)
+    sum_term = E(0)
+    for i in non_signer_indices:
+        sum_term += h_values[i] * public_keys[i] + U[i]
+    Us = a * P - sum_term
+    U[signer_index] = Us
+    h_values[signer_index] = hash_hi(Us, message, public_keys, r, T)
+    V = (a + h_values[signer_index] * private_key) * Q
+    return {"U": U, "V": V, "T": T, "h_values": h_values}
+
+def ring_verify(message, signature, P, Q, public_keys, x, p, r, Fp, Fp13):
+    U = signature["U"]
+    V = signature["V"]
+    T = signature["T"]
+    n = len(public_keys)
+    r = int(r)
+    h_values = [0] * n
+    for i in range(n):
+        h_values[i] = hash_hi(U[i], message, public_keys, r, T)
+    if "h_values" in signature and h_values != signature["h_values"]:
+        print("Recalculated hash values differ", flush=True)
+        return False
+    sum_expression = E(0)
+    for i in range(n):
+        sum_expression += h_values[i] * public_keys[i] + U[i]
+    left_pairing = x_a_sup(V, P, x, p, r, Fp, Fp13)
+    right_pairing = x_a_sup(Q, sum_expression, x, p, r, Fp, Fp13)
+    # Affichage systématique des couplages
+    print(f"Couplage gauche e(V, P) = {left_pairing}", flush=True)
+    print(f"Couplage droit e(Σ[hi * PKi + Ui], Q) = {right_pairing}", flush=True)
+    is_valid = left_pairing == right_pairing
+    if is_valid:
+        print(" Signature valid!", flush=True)
+    else:
+        print(" Signature invalid!", flush=True)
+    return is_valid
+
+def check_linkability(signature1, signature2):
+    T1 = signature1["T"]
+    T2 = signature2["T"]
+    if T1 == T2:  # Corrected typo
+        print(" Signatures linked: same signer for the same event", flush=True)
+        return True
+    else:
+        print(" Signatures not linked: different signers or events", flush=True)
+        return False
+
+def main():
+    try:
+        print("Checkpoint 7: Starting Q construction...", flush=True)
+        Q = construct_Q_with_frobenius(E, E_ext, P, r)
+        print(f"Point Q: {Q}", flush=True)
+        print(f"Order of Q: validated by approximation or cofactor", flush=True)
+        print(f"Q is in Fp: {est_dans_Fp(Q)}", flush=True)
+
+        print("Checkpoint 8: Verifying Frobenius...", flush=True)
+        frobenius_Q = E_ext([Q[0]^p, Q[1]^p])
+        p_Q = p * Q
+        print(f"Verification Frobenius(Q) = p*Q: {frobenius_Q == p_Q}", flush=True)
+        print(f"r*Q = {r*Q}", flush=True)
+        print(f"r*P = {r*P}", flush=True)
+
+        print("Checkpoint 9: Bilinearity test...", flush=True)
+        try:
+            a1 = x_a_sup(Q, P, x, p, r, Fp, Fp13)
+            aP3 = x_a_sup(Q, 3*P, x, p, r, Fp, Fp13)
+            aQ3 = x_a_sup(3*Q, P, x, p, r, Fp, Fp13)
+            print(f"a1 = x_a_sup(Q,P) computed", flush=True)
+            print(f"aP3 = x_a_sup(Q,3*P) computed", flush=True)
+            print(f"aQ3 = x_a_sup(3*Q,P) computed", flush=True)
+            test1 = (aP3 == aQ3)
+            test2 = (aP3 == a1^3)
+            print(f"Test aP3 == aQ3: {test1}", flush=True)
+            print(f"Test aP3 == a1^3: {test2}", flush=True)
+            if test1 and test2:
+                print("✓ The map is bilinear!", flush=True)
+            else:
+                print("✗ Problem with bilinearity", flush=True)
+        except Exception as e:
+            print(f"Error during pairing computation: {e}", flush=True)
+
+        print("Checkpoint 10: Ring signature...", flush=True)
+        m = 50
+        cofactor = E.order() // r
+        
+        key_pairs = [key_gen(P, r) for _ in range(m)]
+        public_keys = [pair["public_key"] for pair in key_pairs]
+        private_keys = [pair["private_key"] for pair in key_pairs]
+        print(f"Generation of {m} key pairs completed.", flush=True)
+        for i in range(m):
+            print(f"  - Public key: {public_keys[i]}", flush=True)
+
+        signer_index = 41
+        message = "the chief accountant to embezzle 45,000,000 XOF"
+        event = "“BGFIWhistleblowing2025"
+        print(f"Message to sign: '{message}'", flush=True)
+        print(f"Event: '{event}'", flush=True)
+        print(f"Signer: user {signer_index+1}", flush=True)
+
+        signature1 = ring_sign(message, signer_index, P, Q, public_keys, private_keys[signer_index], E, r, event, x, p, Fp, Fp13, cofactor)
+        print("Signature generated:", flush=True)
+        print(f"T = {signature1['T']}", flush=True)
+        print(f"V = {signature1['V']}", flush=True)
+        for i in range(m):
+            print(f"U{i+1} = {signature1['U'][i]}", flush=True)
+
+        print("Verifying the signature...", flush=True)
+        verification_result = ring_verify(message, signature1, P, Q, public_keys, x, p, r, Fp, Fp13)
+        print(f"Verification result: {' Valid' if verification_result else ' Invalid'}", flush=True)
+
+        print("Linkability test...", flush=True)
+        signature2 = ring_sign("Mr. CEO of BGFI Bank Gabon, there is embezzlement in the accounting department", signer_index, P, Q, public_keys, private_keys[signer_index], E, r, event, x, p, Fp, Fp13, cofactor)
+        print("Second signature generated:", flush=True)
+        print(f"T = {signature2['T']}", flush=True)
+        link_result = check_linkability(signature1, signature2)
+        print(f"Linkability test result (same event): {' Signatures linked' if link_result else ' Signatures not linked'}", flush=True)
+
+        signature3 = ring_sign(message, signer_index, P, Q, public_keys, private_keys[signer_index], E, r, "BGFIAudit2025", x, p, Fp, Fp13, cofactor)
+        print("Third signature generated:", flush=True)
+        print(f"T = {signature3['T']}", flush=True)
+        link_result = check_linkability(signature1, signature3)
+        print(f"Linkability test result (different event): {' Signatures linked' if link_result else ' Signatures not linked'}", flush=True)
+
+        diff_signer_index = 1
+        signature4 = ring_sign(message, diff_signer_index, P, Q, public_keys, private_keys[diff_signer_index], E, r, event, x, p, Fp, Fp13, cofactor)
+        print("Fourth signature generated:", flush=True)
+        print(f"T = {signature4['T']}", flush=True)
+        link_result = check_linkability(signature1, signature4)
+        print(f"Linkability test result (different signer): {' Signatures linked' if link_result else ' Signatures not linked'}", flush=True)
+
+        print(f"Total demonstration time: {time.time() - start_demo:.2f} seconds", flush=True)
+    except Exception as e:
+        print(f"Error in the demonstration: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"Critical error at startup: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
